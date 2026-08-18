@@ -999,9 +999,35 @@ def non_max_suppression(
     return output
 
 
+def torch_load(path, map_location=None):
+    """
+    兼容 PyTorch 1.x / 2.x 的 torch.load 封装。
+
+    PyTorch 2.6 起 torch.load 默认 weights_only=True，
+    导致 YOLOv5 旧格式权重（含自定义类如 models.yolo.Model）加载失败，
+    报错 "Unsupported global: GLOBAL models.yolo.Model"。
+    此函数自动判断 PyTorch 版本，2.6+ 显式传 weights_only=False。
+
+    Args:
+        path: 权重文件路径
+        map_location: 设备映射，同 torch.load 的 map_location 参数
+
+    Returns:
+        反序列化后的对象
+    """
+    kwargs = {'map_location': map_location}
+    try:
+        major, minor = (int(x) for x in torch.__version__.split('.')[:2])
+        if (major, minor) >= (2, 6):
+            kwargs['weights_only'] = False
+    except (ValueError, IndexError):
+        pass  # 版本号解析失败时回退到默认行为
+    return torch.load(path, **kwargs)
+
+
 def strip_optimizer(f='best.pt', s=''):  # from utils.general import *; strip_optimizer()
     # Strip optimizer from 'f' to finalize training, optionally save as 's'
-    x = torch.load(f, map_location=torch.device('cpu'))
+    x = torch_load(f, map_location=torch.device('cpu'))
     if x.get('ema'):
         x['model'] = x['ema']  # replace model with ema
     for k in 'optimizer', 'best_fitness', 'ema', 'updates':  # keys

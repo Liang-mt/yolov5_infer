@@ -1,136 +1,185 @@
-# 导入需要的库
+# YOLOv5 PyTorch 推理封装
 import os
 import sys
+import logging
 from pathlib import Path
 import numpy as np
 import cv2
 import torch
-import time
-import torch.backends.cudnn as cudnn
 
-# 初始化目录
 FILE = Path(__file__).resolve()
-ROOT = FILE.parents[0]  # 定义YOLOv5的根目录
+ROOT = FILE.parents[0]
 if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))  # 将YOLOv5的根目录添加到环境变量中（程序结束后删除）
-ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
+    sys.path.append(str(ROOT))
+ROOT = Path(os.path.relpath(ROOT, Path.cwd()))
 
 from models.common import DetectMultiBackend
-from utils.dataloaders import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
-from utils.general import (LOGGER, Profile, check_file, check_img_size, check_imshow, check_requirements, colorstr, cv2,
-                           increment_path, non_max_suppression, print_args, scale_boxes, strip_optimizer, xyxy2xywh)
-from utils.plots import Annotator, colors, save_one_box
-from utils.torch_utils import select_device, time_sync
-
-# 导入letterbox
-from utils.augmentations import Albumentations, augment_hsv, copy_paste, letterbox, mixup, random_perspective
-
-data = ROOT / 'data/coco128.yaml'  # 标签文件地址   .yaml文件
-
-imgsz = (640, 640)  # 输入图片的大小 默认640(pixels)
-conf_thres = 0.30  # object置信度阈值 默认0.25  用在nms中
-iou_thres = 0.45  # 做nms的iou阈值 默认0.45   用在nms中
-max_det = 1000  # 每张图片最多的目标数量  用在nms中
-classes = None  # 在nms中是否是只保留某些特定的类 默认是None 就是所有类只要满足条件都可以保留 --class 0, or --class 0 2 3
-agnostic_nms = False  # 进行nms是否也除去不同类别之间的框 默认False
-augment = False  # 预测是否也要采用数据增强 TTA 默认False
-visualize = False  # 特征图可视化 默认FALSE
-half = False  # 是否使用半精度 Float16 推理 可以缩短推理时间 但是默认是False
-dnn = False  # 使用OpenCV DNN进行ONNX推理
+from utils.general import check_img_size, non_max_suppression, scale_boxes
+from utils.torch_utils import select_device
+from utils.augmentations import letterbox
+from base_detector import YOLOv5BaseDetector
 
 
+class YOLOv5Detector(YOLOv5BaseDetector):
+    """YOLOv5 PyTorch 目标检测器，封装模型加载、推理、绘制。
 
-# 载入模型
-def loadmodel(weights,device):
-    global half,imgsz
-    device = select_device(device)
-    model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data)
-    stride, names, pt, jit, onnx, engine = model.stride, model.names, model.pt, model.jit, model.onnx, model.engine
-    imgsz = check_img_size(imgsz, s=stride)  # 检查图片尺寸
+    Usage:
+        detector = YOLOv5Detector('weights/yolov5s.pt', device='0')
+        results = detector.detect(frame)
+        for det in results:
+            detector.draw(frame, det)
+    """
 
-    # Half
-    # 使用半精度 Float16 推理
-    half &= (pt or jit or onnx or engine) and device.type != 'cpu'  # FP16 supported on limited backends with CUDA
-    if pt or jit:
-        model.model.half() if half else model.model.float()
+    def __init__(self,
+                 weights,
+                 device='',
+                 imgsz=(640, 640),
+                 conf_thres=0.30,
+                 iou_thres=0.45,
+                 max_det=1000,
+                 classes=None,
+                 agnostic_nms=False,
+                 augment=False,
+                 visualize=False,
+                 half=False,
+                 dnn=False,
+                 verbose=False,
+                 names=None):
+        """
+        Args:
+            weights: 权重文件路径 (.pt / .onnx / .engine 等)
+            device: 设备，'0' / 'cpu' / '' (自动) / torch.device 对象
+            imgsz: 输入图片尺寸 (h, w)
+            conf_thres: 置信度阈值
+            iou_thres: NMS IOU 阈值
+            max_det: 单图最大检测数
+            classes: 只保留指定类别 (None=全部)
+            agnostic_nms: 类别无关 NMS
+            augment: TTA 数据增强推理
+            visualize: 特征图可视化
+            half: FP16 半精度推理
+            dnn: OpenCV DNN 做 ONNX 推理
+            verbose: 是否显示 YOLOv5 默认输出
+            names: 类别名字典 {id: name}，None 则从模型读取
+        """
+        # 兼容 torch.device 对象
+        if isinstance(device, torch.device):
+            device = '0' if device.type == 'cuda' else 'cpu'
 
-    return model,imgsz
+        # 屏蔽 YOLOv5 默认输出
+        if not verbose:
+            logging.disable(logging.WARNING)
+
+        try:
+            self.device = select_device(device)
+            self.model = DetectMultiBackend(weights, device=self.device, dnn=dnn)
+            imgsz = check_img_size(imgsz, s=self.model.stride)
+            model_names = self.model.names
+
+            # 半精度
+            self.half = half and (self.model.pt or self.model.jit or self.model.onnx or self.model.engine) \
+                        and self.device.type != 'cpu'
+            if self.model.pt or self.model.jit:
+                self.model.model.half() if self.half else self.model.model.float()
+
+            # warmup 只执行一次
+            self.model.warmup(imgsz=(1, 3, *imgsz))
+        finally:
+            if not verbose:
+                logging.disable(logging.NOTSET)
+
+        # 初始化基类（imgsz 已由 check_img_size 校验，names 优先用模型自带的）
+        super().__init__(imgsz, conf_thres, iou_thres, max_det,
+                         classes, agnostic_nms, names or model_names)
+
+        self.augment = augment
+        self.visualize = visualize
+
+    def detect(self, img, **kwargs):
+        """单张图片推理。
+
+        Args:
+            img: BGR 图片 (numpy array, cv2.imread 的结果)
+            **kwargs: 临时覆盖推理参数，如 conf_thres=0.5, classes=[0]
+
+        Returns:
+            list[dict]: [{'class': str, 'conf': float, 'position': [l,t,w,h]}, ...]
+        """
+        p = {
+            'conf_thres': self.conf_thres,
+            'iou_thres': self.iou_thres,
+            'max_det': self.max_det,
+            'classes': self.classes,
+            'agnostic_nms': self.agnostic_nms,
+            'augment': self.augment,
+            'visualize': self.visualize,
+        }
+        p.update(kwargs)
+
+        im0 = img
+        # Padded resize
+        im = letterbox(im0, self.imgsz, self.model.stride, auto=self.model.pt)[0]
+        # HWC to CHW, BGR to RGB
+        im = im.transpose((2, 0, 1))[::-1]
+        im = np.ascontiguousarray(im)
+
+        im = torch.from_numpy(im).to(self.device)
+        im = im.half() if self.half else im.float()
+        im /= 255
+        if len(im.shape) == 3:
+            im = im[None]
+
+        # Inference
+        pred = self.model(im, augment=p['augment'], visualize=p['visualize'])
+
+        # NMS
+        pred = non_max_suppression(pred, p['conf_thres'], p['iou_thres'],
+                                   p['classes'], p['agnostic_nms'], max_det=p['max_det'])
+
+        detections = []
+        for det in pred:
+            if len(det):
+                det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()
+                for *xyxy, conf, cls in reversed(det):
+                    x1, y1, x2, y2 = [round(v.item()) for v in xyxy]
+                    detections.append({
+                        'class': self.names[int(cls)],
+                        'conf': round(float(conf), 2),
+                        'position': [x1, y1, x2 - x1, y2 - y1],
+                    })
+        return detections
 
 
+# ============================================================
+# 向后兼容：保留原函数名作为薄包装
+# ============================================================
 
-def detect(img,device,model,imgsz):
-
-    # Run inference
-    # 开始预测
-    model.warmup(imgsz=(1, 3, *imgsz))  # warmup
-    dt, seen = [0.0, 0.0, 0.0], 0
-
-    # 对图片进行处理
-    im0 = img
-    # Padded resize
-    im = letterbox(im0, imgsz, model.stride, auto=model.pt)[0]
-    # Convert
-    im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
-    im = np.ascontiguousarray(im)
-    t1 = time_sync()
-    im = torch.from_numpy(im).to(device)
-    im = im.half() if half else im.float()  # uint8 to fp16/32
-    im /= 255  # 0 - 255 to 0.0 - 1.0
-    if len(im.shape) == 3:
-        im = im[None]  # expand for batch dim
-    t2 = time_sync()
-    dt[0] += t2 - t1
-
-    # Inference
-    # 预测
-    pred = model(im, augment=augment, visualize=visualize)
-    t3 = time_sync()
-    dt[1] += t3 - t2
-
-    # NMS
-    pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
-    dt[2] += time_sync() - t3
-
-    # 用于存放结果
-    detections = []
-
-    # Process predictions
-    for i, det in enumerate(pred):  # per image 每张图片
-        seen += 1
-        #im0 = im0s.copy()
-        if len(det):
-            # Rescale boxes from img_size to im0 size
-            det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()
-            # Write results
-            # 写入结果
-            for *xyxy, conf, cls in reversed(det):
-                xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4))).view(-1).tolist()
-                xywh = [round(x) for x in xywh]
-                xywh = [xywh[0] - xywh[2] // 2, xywh[1] - xywh[3] // 2, xywh[2],
-                        xywh[3]]  # 检测到目标位置，格式：（left，top，w，h）
-                cls = model.names[int(cls)]
-                conf = round(float(conf),2)
-
-                #按字典形式存入列表，方便调用
-                detections.append({'class': cls, 'conf': conf, 'position': xywh})
+def loadmodel(weights, device='', imgsz=(640, 640), half=False, dnn=False, verbose=False):
+    """加载模型（兼容旧接口）。返回 (model, imgsz, half)。"""
+    det = YOLOv5Detector(weights, device=device, imgsz=imgsz, half=half, dnn=dnn, verbose=verbose)
+    return det.model, det.imgsz, det.half
 
 
-    # 推测的时间
-    #LOGGER.info(f'({t3 - t2:.3f}s)')
-    return detections
+def detect(img, model, imgsz, device=None, conf_thres=0.30, iou_thres=0.45,
+           max_det=1000, classes=None, agnostic_nms=False, augment=False,
+           visualize=False, half=None):
+    """单张图片推理（兼容旧接口）。"""
+    det = YOLOv5Detector.__new__(YOLOv5Detector)
+    det.model = model
+    det.imgsz = imgsz
+    det.device = device or model.device
+    det.half = half if half is not None else getattr(model, 'fp16', False)
+    det.names = model.names
+    det.conf_thres = conf_thres
+    det.iou_thres = iou_thres
+    det.max_det = max_det
+    det.classes = classes
+    det.agnostic_nms = agnostic_nms
+    det.augment = augment
+    det.visualize = visualize
+    return det.detect(img)
 
-def detectdraw(frame,detection):
-    cls = detection['class']
-    conf = detection['conf']
-    x,y,width,height = detection['position']
 
-    cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 255, 0), 2)
-    caption = "{} {:.2f}".format(cls, conf)
-    cv2.putText(frame,
-                caption, (x, y - 8),
-                0,
-                1,
-                (0, 255, 0),
-                thickness=2,
-                lineType=cv2.LINE_AA)
-
+def detectdraw(frame, detection, color=(0, 255, 0), line_thickness=2):
+    """绘制检测框（兼容旧接口）。"""
+    YOLOv5BaseDetector.draw(frame, detection, color, line_thickness)

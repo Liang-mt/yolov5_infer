@@ -1,49 +1,28 @@
-# YOLOv5 🚀 requirements
+# YOLOv5 多后端推理依赖
 # Usage: pip install -r requirements.txt
 
-# Base ------------------------------------------------------------------------
-gitpython
-ipython  # interactive notebook
-matplotlib>=3.2.2
-numpy>=1.18.5
+# 核心（PyTorch 后端）
+torch>=1.7.0
+torchvision>=0.8.1
 opencv-python>=4.1.1
+numpy>=1.18.5
 Pillow>=7.1.2
-psutil  # system resources
 PyYAML>=5.3.1
 requests>=2.23.0
-scipy>=1.4.1
-thop>=0.1.1  # FLOPs computation
-torch>=1.7.0  # see https://pytorch.org/get-started/locally (recommended)
-torchvision>=0.8.1
 tqdm>=4.64.0
-# protobuf<=3.20.1  # https://github.com/ultralytics/yolov5/issues/8012
+scipy>=1.4.1
+matplotlib>=3.2.2
+psutil
 
-# Logging ---------------------------------------------------------------------
-tensorboard>=2.4.1
-# clearml>=1.2.0
-# comet
+# ONNX Runtime 后端（GPU 版，CPU 版用 pip install onnxruntime）
+onnxruntime-gpu>=1.15.0
 
-# Plotting --------------------------------------------------------------------
-pandas>=1.1.4
-seaborn>=0.11.0
+# OpenCV DNN 后端（无需额外依赖，opencv-python 已包含）
 
-# Export ----------------------------------------------------------------------
-# coremltools>=6.0  # CoreML export
-# onnx>=1.9.0  # ONNX export
-# onnx-simplifier>=0.4.1  # ONNX simplifier
-# nvidia-pyindex  # TensorRT export
-# nvidia-tensorrt  # TensorRT export
-# scikit-learn<=1.1.2  # CoreML quantization
-# tensorflow>=2.4.1  # TF exports (-cpu, -aarch64, -macos)
-# tensorflowjs>=3.9.0  # TF.js export
-# openvino-dev  # OpenVINO export
+# TensorRT 后端（需单独安装，pip install tensorrt pycuda）
+# tensorrt
+# pycuda
 
-# Deploy ----------------------------------------------------------------------
-# tritonclient[all]~=2.24.0
-
-# Extras ----------------------------------------------------------------------
-# mss  # screenshots
-# albumentations>=1.0.3
-# pycocotools>=2.0  # COCO mAP
-# roboflow
-# ultralytics  # HUB https://hub.ultralytics.com
+# 模型导出（export.py / export_tensorrt.py）
+onnx>=1.9.0
+onnx-simplifier>=0.4.1
