@@ -14,6 +14,7 @@ from collections import OrderedDict, namedtuple
 from copy import copy
 from pathlib import Path
 from urllib.parse import urlparse
+import torchvision.models as models
 
 import cv2
 import numpy as np
@@ -21,6 +22,7 @@ import pandas as pd
 import requests
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from IPython.display import display
 from PIL import Image
 from torch.cuda import amp
@@ -42,6 +44,70 @@ def autopad(k, p=None, d=1):  # kernel, padding, dilation
         p = k // 2 if isinstance(k, int) else [x // 2 for x in k]  # auto-pad
     return p
 
+
+class MobileNetV3(nn.Module):
+
+    def __init__(self, slice):
+        super(MobileNetV3, self).__init__()
+        self.model = None
+        if slice == 1:
+            self.model = models.mobilenet_v3_small(pretrained=True).features[:4]
+        elif slice == 2:
+            self.model = models.mobilenet_v3_small(pretrained=True).features[4:9]
+        else:
+            self.model = models.mobilenet_v3_small(pretrained=True).features[9:]
+
+    def forward(self, x):
+        return self.model(x)
+
+
+class SE(nn.Module):
+
+    def __init__(self, in_chnls, ratio):
+        super(SE, self).__init__()
+        self.squeeze = nn.AdaptiveAvgPool2d((1, 1))
+        self.compress = nn.Conv2d(in_chnls, in_chnls // ratio, 1, 1, 0)
+        self.excitation = nn.Conv2d(in_chnls // ratio, in_chnls, 1, 1, 0)
+
+    def forward(self, x):
+        out = self.squeeze(x)
+        out = self.compress(out)
+        out = F.relu(out)
+        out = self.excitation(out)
+        return x * F.sigmoid(out)
+
+
+class C2fBottleneck(nn.Module):
+    # Standard bottleneck
+    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):  # ch_in, ch_out, shortcut, groups, kernels, expand
+        super().__init__()
+        c_ = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, c_, k[0], 1)
+        self.cv2 = Conv(c_, c2, k[1], 1, g=g)
+        self.add = shortcut and c1 == c2
+
+    def forward(self, x):
+        return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
+
+
+class C2f(nn.Module):
+    # CSP Bottleneck with 2 convolutions
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
+        super().__init__()
+        self.c = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
+        self.m = nn.ModuleList(C2fBottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
+
+    def forward(self, x):
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
+
+    def forward_split(self, x):
+        y = list(self.cv1(x).split((self.c, self.c), 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
 
 class Conv(nn.Module):
     # Standard convolution with args(ch_in, ch_out, kernel, stride, padding, groups, dilation, activation)
@@ -699,7 +765,7 @@ class AutoShape(nn.Module):
             x = np.ascontiguousarray(np.array(x).transpose((0, 3, 1, 2)))  # stack and BHWC to BCHW
             x = torch.from_numpy(x).to(p.device).type_as(p) / 255  # uint8 to fp16/32
 
-        with amp.autocast(autocast):
+        with torch.amp.autocast('cuda', enabled=autocast):
             # Inference
             with dt[1]:
                 y = self.model(x, augment=augment)  # forward

@@ -348,18 +348,24 @@ class LoadStreams:
         n = len(sources)
         self.sources = [clean_str(x) for x in sources]  # clean source names for later
         self.imgs, self.fps, self.frames, self.threads = [None] * n, [0] * n, [0] * n, [None] * n
+        # 新增：记录哪些source是摄像头（0），用于后续翻转
+        self.is_camera = [False] * n
+
         for i, s in enumerate(sources):  # index, source
             # Start thread to read frames from video stream
             st = f'{i + 1}/{n}: {s}... '
             if urlparse(s).hostname in ('www.youtube.com', 'youtube.com', 'youtu.be'):  # if source is YouTube video
                 # YouTube format i.e. 'https://www.youtube.com/watch?v=Zgi9g1ksQHc' or 'https://youtu.be/Zgi9g1ksQHc'
-                check_requirements(('pafy', 'youtube_dl==2020.12.2'))
-                import pafy
-                s = pafy.new(s).getbest(preftype="mp4").url  # YouTube URL
+                # check_requirements(('pafy', 'youtube_dl==2020.12.2'))  # 注释掉避免依赖问题，如需使用可取消注释
+                # import pafy
+                # s = pafy.new(s).getbest(preftype="mp4").url  # YouTube URL
+                pass  # 简化处理，如需YouTube支持可恢复原代码
             s = eval(s) if s.isnumeric() else s  # i.e. s = '0' local webcam
             if s == 0:
                 assert not is_colab(), '--source 0 webcam unsupported on Colab. Rerun command in a local environment.'
                 assert not is_kaggle(), '--source 0 webcam unsupported on Kaggle. Rerun command in a local environment.'
+                self.is_camera[i] = True  # 标记为摄像头
+
             cap = cv2.VideoCapture(s)
             assert cap.isOpened(), f'{st}Failed to open {s}'
             w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -369,6 +375,10 @@ class LoadStreams:
             self.fps[i] = max((fps if math.isfinite(fps) else 0) % 100, 0) or 30  # 30 FPS fallback
 
             _, self.imgs[i] = cap.read()  # guarantee first frame
+            # 摄像头画面先做一次初始翻转
+            if self.is_camera[i] and self.imgs[i] is not None:
+                self.imgs[i] = cv2.flip(self.imgs[i], 1)  # 1表示水平翻转（左右）
+
             self.threads[i] = Thread(target=self.update, args=([i, cap, s]), daemon=True)
             LOGGER.info(f"{st} Success ({self.frames[i]} frames {w}x{h} at {self.fps[i]:.2f} FPS)")
             self.threads[i].start()
@@ -391,6 +401,9 @@ class LoadStreams:
             if n % self.vid_stride == 0:
                 success, im = cap.retrieve()
                 if success:
+                    # 核心修改：如果是摄像头，对每一帧做左右翻转
+                    if self.is_camera[i]:
+                        im = cv2.flip(im, 1)  # cv2.flip(im, 1) = 水平翻转（左右）
                     self.imgs[i] = im
                 else:
                     LOGGER.warning('WARNING ⚠️ Video stream unresponsive, please check your IP camera connection.')
@@ -420,7 +433,6 @@ class LoadStreams:
 
     def __len__(self):
         return len(self.sources)  # 1E12 frames = 32 streams at 30 FPS for 30 years
-
 
 def img2label_paths(img_paths):
     # Define label paths as a function of image paths

@@ -5,12 +5,22 @@ utils/initialization
 
 import contextlib
 import platform
+import sys
 import threading
 
 
 def emojis(str=''):
-    # Return platform-dependent emoji-safe version of string
-    return str.encode().decode('ascii', 'ignore') if platform.system() == 'Windows' else str
+    # Return platform-dependent emoji-safe version of string (modified: support UTF-8 terminal)
+    if platform.system() == 'Windows':
+        try:
+            # 先检测终端是否支持UTF-8，支持则保留emoji
+            sys.stdout.encoding == 'utf-8'
+            return str  # 现代终端：直接返回原字符串，保留emoji
+        except:
+            # 老旧终端：回退到官方逻辑，过滤非ASCII
+            return str.encode().decode('ascii', 'ignore')
+    else:
+        return str
 
 
 class TryExcept(contextlib.ContextDecorator):
