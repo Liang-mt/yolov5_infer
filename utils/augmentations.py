@@ -28,15 +28,24 @@ class Albumentations:
             import albumentations as A
             check_version(A.__version__, '1.0.3', hard=True)  # version requirement
 
+            # 兼容 albumentations >=1.4（RandomResizedCrop 参数从 height/width 改为 size）
+            import inspect as _inspect
+            if 'size' in _inspect.signature(A.RandomResizedCrop).parameters:
+                _crop = A.RandomResizedCrop(size=(size, size), scale=(0.8, 1.0), ratio=(0.9, 1.11), p=0.0)
+            else:
+                _crop = A.RandomResizedCrop(height=size, width=size, scale=(0.8, 1.0), ratio=(0.9, 1.11), p=0.0)
             T = [
-                A.RandomResizedCrop(height=size, width=size, scale=(0.8, 1.0), ratio=(0.9, 1.11), p=0.0),
+                _crop,
                 A.Blur(p=0.01),
                 A.MedianBlur(p=0.01),
                 A.ToGray(p=0.01),
                 A.CLAHE(p=0.01),
                 A.RandomBrightnessContrast(p=0.0),
                 A.RandomGamma(p=0.0),
-                A.ImageCompression(quality_lower=75, p=0.0)]  # transforms
+                # 兼容 albumentations >=2.0（ImageCompression 参数从 quality_lower 改为 quality_range）
+                A.ImageCompression(quality_range=(75, 100), p=0.0)
+                if 'quality_range' in _inspect.signature(A.ImageCompression).parameters
+                else A.ImageCompression(quality_lower=75, p=0.0)]  # transforms
             self.transform = A.Compose(T, bbox_params=A.BboxParams(format='yolo', label_fields=['class_labels']))
 
             LOGGER.info(prefix + ', '.join(f'{x}'.replace('always_apply=False, ', '') for x in T if x.p))
@@ -320,7 +329,12 @@ def classify_albumentations(
         from albumentations.pytorch import ToTensorV2
         check_version(A.__version__, '1.0.3', hard=True)  # version requirement
         if augment:  # Resize and crop
-            T = [A.RandomResizedCrop(height=size, width=size, scale=scale, ratio=ratio)]
+            # 兼容 albumentations >=1.4（RandomResizedCrop 参数从 height/width 改为 size）
+            import inspect as _inspect
+            if 'size' in _inspect.signature(A.RandomResizedCrop).parameters:
+                T = [A.RandomResizedCrop(size=(size, size), scale=scale, ratio=ratio)]
+            else:
+                T = [A.RandomResizedCrop(height=size, width=size, scale=scale, ratio=ratio)]
             if auto_aug:
                 # TODO: implement AugMix, AutoAug & RandAug in albumentation
                 LOGGER.info(f'{prefix}auto augmentations are currently not supported')

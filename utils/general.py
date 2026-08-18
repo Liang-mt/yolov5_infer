@@ -3,6 +3,11 @@
 General utils
 """
 
+# 兼容 protobuf >= 3.20 与旧版 tensorboard/onnx 生成的 _pb2.py 文件
+# 必须在导入 onnx/tensorboard 等依赖 protobuf 的库之前设置
+import os as _os
+_os.environ.setdefault('PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', 'python')
+
 import contextlib
 import glob
 import inspect
@@ -51,6 +56,16 @@ AUTOINSTALL = str(os.getenv('YOLOv5_AUTOINSTALL', True)).lower() == 'true'  # gl
 VERBOSE = str(os.getenv('YOLOv5_VERBOSE', True)).lower() == 'true'  # global verbose mode
 TQDM_BAR_FORMAT = '{l_bar}{bar:10}| {n_fmt}/{total_fmt} {elapsed}'  # tqdm bar format
 FONT = 'Arial.ttf'  # https://ultralytics.com/assets/Arial.ttf
+
+def torch_load(*args, **kwargs):
+    """兼容 PyTorch 2.6+ 的 torch.load（weights_only 默认值从 False 变为 True）。
+    旧版 PyTorch 不支持 weights_only 参数时自动回退。"""
+    try:
+        return torch.load(*args, **kwargs, weights_only=False)
+    except TypeError:
+        kwargs.pop('weights_only', None)
+        return torch.load(*args, **kwargs)
+
 
 torch.set_printoptions(linewidth=320, precision=5, profile='long')
 np.set_printoptions(linewidth=320, formatter={'float_kind': '{:11.5g}'.format})  # format short g, %precision=5
@@ -495,6 +510,21 @@ def check_font(font=FONT, progress=False):
         torch.hub.download_url_to_file(url, str(file), progress=progress)
 
 
+def download_url_to_file(url, dst):
+    """兼容 HTTP 308 重定向的文件下载（requests 自动跟随所有重定向，带 tqdm 进度条）"""
+    import requests
+    from tqdm import tqdm
+    r = requests.get(url, stream=True, timeout=120, allow_redirects=True)
+    r.raise_for_status()
+    total = int(r.headers.get('content-length', 0))
+    with open(dst, 'wb') as f, tqdm(total=total, unit='B', unit_scale=True, unit_divisor=1024,
+                                  desc=Path(dst).name) as pbar:
+        for chunk in r.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                f.write(chunk)
+                pbar.update(len(chunk))
+
+
 def check_dataset(data, autodownload=True):
     # Download, check and/or unzip dataset if not found locally
 
@@ -544,7 +574,7 @@ def check_dataset(data, autodownload=True):
             if s.startswith('http') and s.endswith('.zip'):  # URL
                 f = Path(s).name  # filename
                 LOGGER.info(f'Downloading {s} to {f}...')
-                torch.hub.download_url_to_file(s, f)
+                download_url_to_file(s, f)
                 Path(DATASETS_DIR).mkdir(parents=True, exist_ok=True)  # create root
                 unzip_file(f, path=DATASETS_DIR)  # unzip
                 Path(f).unlink()  # remove zip
@@ -1001,7 +1031,7 @@ def non_max_suppression(
 
 def strip_optimizer(f='best.pt', s=''):  # from utils.general import *; strip_optimizer()
     # Strip optimizer from 'f' to finalize training, optionally save as 's'
-    x = torch.load(f, map_location=torch.device('cpu'))
+    x = torch_load(f, map_location=torch.device('cpu'))
     if x.get('ema'):
         x['model'] = x['ema']  # replace model with ema
     for k in 'optimizer', 'best_fitness', 'ema', 'updates':  # keys

@@ -11,10 +11,19 @@ import torch
 from utils.general import LOGGER, colorstr
 from utils.torch_utils import profile
 
+# 兼容 PyTorch 2.3+ 的 AMP API
+try:
+    from torch.amp import autocast as _autocast
+    def amp_autocast(enabled=True):
+        return _autocast('cuda', enabled=enabled)
+except ImportError:
+    def amp_autocast(enabled=True):
+        return torch.cuda.amp.autocast(enabled=enabled)
+
 
 def check_train_batch_size(model, imgsz=640, amp=True):
     # Check YOLOv5 training batch size
-    with torch.cuda.amp.autocast(amp):
+    with amp_autocast(amp):
         return autobatch(deepcopy(model).train(), imgsz)  # compute optimal batch size
 
 

@@ -7,11 +7,27 @@ import os
 import warnings
 from pathlib import Path
 
+# 兼容 protobuf >= 3.20 与旧版 tensorboard 生成的 _pb2.py 文件
+# 必须在导入 torch.utils.tensorboard 之前设置，否则会触发 Descriptors cannot be created directly
+os.environ.setdefault('PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', 'python')
+
 import pkg_resources as pkg
 import torch
-from torch.utils.tensorboard import SummaryWriter
 
-from utils.general import LOGGER, colorstr, cv2
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except (TypeError, ImportError, AttributeError):
+    # protobuf 版本不兼容或 tensorboard 未正确安装时，使用 dummy 类降级（仅禁用 TensorBoard 日志）
+    class SummaryWriter:
+        def __init__(self, *args, **kwargs): pass
+        def add_scalar(self, *args, **kwargs): pass
+        def add_image(self, *args, **kwargs): pass
+        def add_graph(self, *args, **kwargs): pass
+        def add_scalars(self, *args, **kwargs): pass
+        def flush(self, *args, **kwargs): pass
+        def close(self, *args, **kwargs): pass
+
+from utils.general import LOGGER, colorstr, cv2, torch_load
 from utils.loggers.clearml.clearml_utils import ClearmlLogger
 from utils.loggers.wandb.wandb_utils import WandbLogger
 from utils.plots import plot_images, plot_labels, plot_results
@@ -106,7 +122,7 @@ class Loggers():
         # W&B
         if wandb and 'wandb' in self.include:
             wandb_artifact_resume = isinstance(self.opt.resume, str) and self.opt.resume.startswith('wandb-artifact://')
-            run_id = torch.load(self.weights).get('wandb_id') if self.opt.resume and not wandb_artifact_resume else None
+            run_id = torch_load(self.weights).get('wandb_id') if self.opt.resume and not wandb_artifact_resume else None
             self.opt.hyp = self.hyp  # add hyperparameters
             self.wandb = WandbLogger(self.opt, run_id)
             # temp warn. because nested artifacts not supported after 0.12.10

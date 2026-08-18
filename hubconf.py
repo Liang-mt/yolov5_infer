@@ -34,7 +34,7 @@ def _create(name, pretrained=True, channels=3, classes=80, autoshape=True, verbo
     from models.experimental import attempt_load
     from models.yolo import ClassificationModel, DetectionModel, SegmentationModel
     from utils.downloads import attempt_download
-    from utils.general import LOGGER, check_requirements, intersect_dicts, logging
+    from utils.general import LOGGER, check_requirements, intersect_dicts, logging, torch_load
     from utils.torch_utils import select_device
 
     if not verbose:
@@ -62,7 +62,7 @@ def _create(name, pretrained=True, channels=3, classes=80, autoshape=True, verbo
             cfg = list((Path(__file__).parent / 'models').rglob(f'{path.stem}.yaml'))[0]  # model.yaml path
             model = DetectionModel(cfg, channels, classes)  # create model
             if pretrained:
-                ckpt = torch.load(attempt_download(path), map_location=device)  # load
+                ckpt = torch_load(attempt_download(path), map_location=device)  # load
                 csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
                 csd = intersect_dicts(csd, model.state_dict(), exclude=['anchors'])  # intersect
                 model.load_state_dict(csd, strict=False)  # load
